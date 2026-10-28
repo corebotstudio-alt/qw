@@ -6,10 +6,10 @@ on:
 jobs:
   run-dpanel:
     runs-on: ubuntu-latest
-    timeout-minutes: 360 # 6 hours max limit on GitHub Actions
+    timeout-minutes: 360 # 6 hours max limit
 
     steps:
-      - name: Deploy DPanel on Native Docker
+      - name: Deploy DPanel on Docker
         run: |
           echo "Starting DPanel container..."
           docker run -d \
@@ -20,44 +20,20 @@ jobs:
             -v /tmp/dpanel:/dpanel \
             dpanel/dpanel:latest
 
-          echo "DPanel container started successfully."
+          echo "Waiting for DPanel to be ready..."
+          sleep 5
+          curl -I http://127.0.0.1:8807 || true
 
-      - name: Setup Cloudflare Tunnel
+      - name: Install Cloudflared
         run: |
-          echo "Installing Cloudflared..."
           curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
           sudo mv cloudflared /usr/local/bin/
 
-          echo "Starting Cloudflare Tunnel on port 8807..."
-          cloudflared tunnel --url http://localhost:8807 --logfile tunnel.log > /dev/null 2>&1 &
-          
-          # Wait for the tunnel URL to generate
-          sleep 6
-
-      - name: Print Public DPanel Web URL
+      - name: Start Cloudflare Tunnel (Foreground - Kept Alive)
         run: |
-          echo ""
           echo "================================================================="
-          echo "  🚀 YOUR DPANEL IS LIVE AND READY!"
+          echo "  STARTING TUNNEL... LOOK BELOW FOR YOUR trycloudflare.com URL"
           echo "================================================================="
-          echo ""
-          TUNNEL_URL=$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' tunnel.log | head -n 1 || true)
-          if [ -n "$TUNNEL_URL" ]; then
-            echo "  👉 Open in your phone or PC browser:"
-            echo "     $TUNNEL_URL"
-          else
-            echo "  Check log below for trycloudflare URL:"
-            cat tunnel.log | grep -E 'trycloudflare.com' || cat tunnel.log
-          fi
-          echo ""
-          echo "================================================================="
-          echo "  Specs: 2 vCPUs | 7 GB RAM | High-Speed Cloud Network"
-          echo "  Server will stay active for up to 6 hours."
-          echo "================================================================="
-
-      - name: Keep Server Alive
-        run: |
-          # Keep session alive for 6 hours (21600 seconds)
-          echo "Server running in background. Do not cancel the workflow..."
-          sleep 21600
+          # Running in the foreground ensures GitHub Actions never kills the process
+          cloudflared tunnel --url http://127.0.0.1:8807
