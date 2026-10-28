@@ -1,107 +1,63 @@
-name: Free KVM VPS Runner
+name: DPanel Cloud Server
 
 on:
   workflow_dispatch:
-    inputs:
-      ssh_password:
-        description: 'Set SSH Password for the VM'
-        required: true
-        default: 'vps12345'
-      os_choice:
-        description: 'Choose Operating System'
-        required: true
-        default: 'debian12'
-        type: choice
-        options:
-          - debian12
-          - ubuntu22
-          - ubuntu24
 
 jobs:
-  launch-vps:
+  run-dpanel:
     runs-on: ubuntu-latest
+    timeout-minutes: 360 # 6 hours max limit on GitHub Actions
+
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Enable Hardware KVM & Install QEMU
+      - name: Deploy DPanel on Native Docker
         run: |
-          sudo apt-get update
-          sudo apt-get install -y qemu-system-x86 qemu-utils cloud-image-utils wget curl
-          # Grant permissions to /dev/kvm
-          sudo chmod 666 /dev/kvm
-          echo "Hardware KVM is ready!"
+          echo "Starting DPanel container..."
+          docker run -d \
+            --name dpanel \
+            --restart=always \
+            -p 8807:8080 \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v /tmp/dpanel:/dpanel \
+            dpanel/dpanel:latest
 
-      - name: Download Cloud Image & Configure Cloud-Init
+          echo "DPanel container started successfully."
+
+      - name: Setup Cloudflare Tunnel
         run: |
-          mkdir -p vps-data
-          cd vps-data
-          
-          if [ "${{ github.event.inputs.os_choice }}" = "debian12" ]; then
-            IMG_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2"
-          elif [ "${{ github.event.inputs.os_choice }}" = "ubuntu22" ]; then
-            IMG_URL="https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img"
-          else
-            IMG_URL="https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
-          fi
-
-          echo "Downloading $IMG_URL..."
-          wget -q --show-progress "$IMG_URL" -O disk.qcow2
-          qemu-img resize disk.qcow2 25G
-
-          cat > user-data <<EOF
-          #cloud-config
-          hostname: kvm-vps
-          ssh_pwauth: true
-          disable_root: false
-          users:
-            - name: root
-              shell: /bin/bash
-              password: $(openssl passwd -6 "${{ github.event.inputs.ssh_password }}")
-          chpasswd:
-            list: |
-              root:${{ github.event.inputs.ssh_password }}
-            expire: false
-          EOF
-
-          cat > meta-data <<EOF
-          instance-id: iid-kvm-vps
-          local-hostname: kvm-vps
-          EOF
-
-          cloud-localds seed.iso user-data meta-data
-
-      - name: Setup Cloudflare Tunnel for Remote SSH
-        run: |
+          echo "Installing Cloudflared..."
           curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
           sudo mv cloudflared /usr/local/bin/
+
+          echo "Starting Cloudflare Tunnel on port 8807..."
+          cloudflared tunnel --url http://localhost:8807 --logfile tunnel.log > /dev/null 2>&1 &
           
-          cloudflared tunnel --url tcp://localhost:2222 --logfile tunnel.log > /dev/null 2>&1 &
-          sleep 5
+          # Wait for the tunnel URL to generate
+          sleep 6
 
-      - name: Display Connection Details
+      - name: Print Public DPanel Web URL
         run: |
-          echo "=========================================================="
-          echo "   YOUR KVM VPS IS READY!"
-          echo "=========================================================="
-          echo "Username: root"
-          echo "Password: ${{ github.event.inputs.ssh_password }}"
-          echo "----------------------------------------------------------"
-          cat tunnel.log | grep -E 'trycloudflare.com' || true
-          echo "=========================================================="
+          echo ""
+          echo "================================================================="
+          echo "  🚀 YOUR DPANEL IS LIVE AND READY!"
+          echo "================================================================="
+          echo ""
+          TUNNEL_URL=$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' tunnel.log | head -n 1 || true)
+          if [ -n "$TUNNEL_URL" ]; then
+            echo "  👉 Open in your phone or PC browser:"
+            echo "     $TUNNEL_URL"
+          else
+            echo "  Check log below for trycloudflare URL:"
+            cat tunnel.log | grep -E 'trycloudflare.com' || cat tunnel.log
+          fi
+          echo ""
+          echo "================================================================="
+          echo "  Specs: 2 vCPUs | 7 GB RAM | High-Speed Cloud Network"
+          echo "  Server will stay active for up to 6 hours."
+          echo "================================================================="
 
-      - name: Launch KVM VM (Hardware Accelerated)
+      - name: Keep Server Alive
         run: |
-          cd vps-data
-          qemu-system-x86_64 \
-            -enable-kvm \
-            -cpu host \
-            -m 6144M \
-            -smp 2 \
-            -drive file=disk.qcow2,format=qcow2,if=virtio \
-            -drive file=seed.iso,format=raw,if=virtio \
-            -device virtio-net-pci,netdev=n0 \
-            -netdev user,id=n0,hostfwd=tcp::2222-:22 \
-            -nographic \
-            -serial mon:stdio
+          # Keep session alive for 6 hours (21600 seconds)
+          echo "Server running in background. Do not cancel the workflow..."
+          sleep 21600
